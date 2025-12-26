@@ -97,7 +97,7 @@ const bodyTexture = new THREE.CanvasTexture(canvas);
 
 let ringSprites = []; 
 let bodyParticles;
-const particleCount = 12000; // Slightly reduced for performance
+const particleCount = 16000; // Slightly reduced for performance
 
 const physicsDataBody = []; 
 const initialBodyColor = new THREE.Color(0xfff6bd);
@@ -225,7 +225,7 @@ async function loadImagesSequentially() {
         const percent = Math.round((createdCount / totalTargetSprites) * 100);
         
         // Update the new UI elements
-        if(loaderText) loaderText.innerText = `Loading Memories... ${percent}%`;
+        if(loaderText) loaderText.innerText = `Wait Something Loading... ${percent}%`;
         if(progressBar) progressBar.style.width = `${percent}%`;
         
         // Use modulus (%) to loop through your file list indefinitely
@@ -267,7 +267,7 @@ function createSaturn() {
     physicsDataBody.length = 0;
     const bodyPositions = [];
     
-    const bodyCount = Math.floor(particleCount * 0.3);
+    const bodyCount = Math.floor( 28000 * 0.3);
     for (let i = 0; i < bodyCount; i++) {
         const p = randomSpherePoint(10);
         bodyPositions.push(p.x, p.y, p.z);
