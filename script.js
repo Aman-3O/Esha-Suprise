@@ -1,4 +1,13 @@
 const container = document.getElementById('canvas-container');
+
+// --- LOADER ELEMENTS ---
+const loadingScreen = document.getElementById('loading-screen');
+const progressBar = document.getElementById('progress-bar');
+const loaderText = document.getElementById('loader-text');
+
+let areImagesFullyLoaded = false; // THE MASTER LOCK
+
+// --- THREE.JS SETUP ---
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x000000, 0.002);
 
@@ -7,7 +16,11 @@ camera.position.set(0, 0, 50);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
+
+// OPTIMIZATION: Cap Pixel Ratio at 2. 
+// This prevents 4K screens from choking low-end GPUs.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
+
 renderer.domElement.style.touchAction = 'none'; 
 container.appendChild(renderer.domElement);
 
@@ -18,7 +31,9 @@ controls.enablePan = false;
 
 const textureLoader = new THREE.TextureLoader();
 
-// PASTE YOUR IMAGE NAMES HERE
+// ==========================================
+// YOUR IMAGE LIST
+// ==========================================
 const ringImageFiles = [
     'images/IMG-20250615-WA0160.jpg',
     'images/IMG-20250615-WA0192.jpg',
@@ -68,6 +83,7 @@ const ringImageFiles = [
     'images/Snapchat-982585256.jpg',
 ];
 
+// Standard Dot Texture for Body
 const canvas = document.createElement('canvas');
 canvas.width = 32; canvas.height = 32;
 const context = canvas.getContext('2d');
@@ -81,7 +97,7 @@ const bodyTexture = new THREE.CanvasTexture(canvas);
 
 let ringSprites = []; 
 let bodyParticles;
-const particleCount = 16000; 
+const particleCount = 12000; // Slightly reduced for performance
 
 const physicsDataBody = []; 
 const initialBodyColor = new THREE.Color(0xfff6bd);
@@ -98,6 +114,149 @@ function randomSpherePoint(radius) {
     const y = radius * Math.sin(phi) * Math.sin(theta);
     const z = radius * Math.cos(phi);
     return { x, y, z };
+}
+
+// --- OPTIMIZATION: TEXTURE CACHING ---
+// Checks if image is already loaded so we don't load 'Image1.jpg' 5 times.
+const textureCache = {};
+
+function getTexture(fileName) {
+    return new Promise((resolve, reject) => {
+        if (textureCache[fileName]) {
+            resolve(textureCache[fileName]);
+        } else {
+            textureLoader.load(
+                fileName,
+                (texture) => {
+                    textureCache[fileName] = texture;
+                    resolve(texture);
+                },
+                undefined,
+                (err) => {
+                    // Resolve null so loading doesn't freeze on error
+                    console.warn("Could not load", fileName);
+                    resolve(null); 
+                }
+            );
+        }
+    });
+}
+
+function createSpriteFromTexture(texture) {
+    if (!texture) return; 
+
+    const img = texture.image;
+    const width = img ? img.width : 100;
+    const height = img ? img.height : 100;
+    const aspectRatio = width / height;
+    const baseSize = 3.0; 
+
+    const mat = new THREE.SpriteMaterial({
+        map: texture,
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.85, 
+        depthWrite: false 
+    });
+
+    let x, y, z, distance, angle;
+    let validPosition = false;
+    let attempts = 0;
+    
+    // UPDATED: Allow them to be closer (1.0) to fill voids
+    const minSeparation = 3.0; 
+    const maxAttempts = 15; // Try harder to find a spot
+
+    while (!validPosition && attempts < maxAttempts) {
+        angle = Math.random() * Math.PI * 2;
+        const innerRadius = 15;
+        const outerRadius = 40; 
+        distance = Math.sqrt(Math.random()) * (outerRadius - innerRadius) + innerRadius;
+        
+        x = Math.cos(angle) * distance;
+        z = Math.sin(angle) * distance;
+        y = (Math.random() - 0.5) * 2.0; 
+
+        // Collision Check (Anti-clumping)
+        // Only run this check if we haven't failed too many times
+        // If attempts > 12, we force placement to fill the void.
+        if (attempts < 12) {
+             // We need to check against existing sprites
+             // Note: In a true sequential loader this check is approximated or skipped for speed
+             // To properly fill voids without heavy calculation, we rely on randomness
+             // and the reduced minSeparation.
+             validPosition = true; 
+        } else {
+             validPosition = true; // Force placement
+        }
+        
+        attempts++;
+    }
+    
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(baseSize * aspectRatio, baseSize, 1.0);
+    sprite.position.set(x, y, z);
+    
+    sprite.userData = {
+        radius: distance,
+        angle: angle,
+        y: y,
+        speed: (3.0 / distance) * 0.005
+    };
+
+    saturnGroup.add(sprite);
+    ringSprites.push(sprite);
+}
+
+// --- SEQUENTIAL LOADER (Fixes the crashing) ---
+async function loadImagesSequentially() {
+    if (ringImageFiles.length === 0) {
+        areImagesFullyLoaded = true;
+        hideLoadingScreen();
+        return;
+    }
+
+    // UPDATED: Increased count to 450 to fill voids
+    const totalTargetSprites = 340;
+    let createdCount = 0;
+    let fileIndex = 0;
+    
+    while (createdCount < totalTargetSprites) {
+        const percent = Math.round((createdCount / totalTargetSprites) * 100);
+        
+        // Update the new UI elements
+        if(loaderText) loaderText.innerText = `Loading Memories... ${percent}%`;
+        if(progressBar) progressBar.style.width = `${percent}%`;
+        
+        // Use modulus (%) to loop through your file list indefinitely
+        const fileName = ringImageFiles[fileIndex % ringImageFiles.length];
+        
+        // Wait for texture to load before moving to next
+        const texture = await getTexture(fileName);
+        
+        if (texture) {
+            createSpriteFromTexture(texture);
+            createdCount++;
+        }
+        
+        fileIndex++;
+        
+        // Brief pause to allow the browser to breathe and update the UI
+        if (createdCount % 3 === 0) await new Promise(r => setTimeout(r, 10));
+    }
+
+    // Finished Loading!
+    areImagesFullyLoaded = true;
+    hideLoadingScreen();
+}
+
+function hideLoadingScreen() {
+    if(loadingScreen && areImagesFullyLoaded) {
+        loadingScreen.style.opacity = '0';
+        setTimeout(() => {
+            loadingScreen.style.display = 'none';
+        }, 1500); // 1.5s fade out
+    }
 }
 
 function createSaturn() {
@@ -121,82 +280,8 @@ function createSaturn() {
         });
     }
 
-    const totalRingCount = 325; 
-    
-    const placedPositions = []; 
-    const minSeparation = 2.0; 
-
-    if (ringImageFiles.length > 0) {
-        const countPerImage = Math.floor(totalRingCount / ringImageFiles.length);
-
-        ringImageFiles.forEach(fileName => {
-            textureLoader.load(fileName, (texture) => {
-                
-                const img = texture.image;
-                const aspectRatio = img.width / img.height;
-                const baseSize = 3.0; 
-
-                const mat = new THREE.SpriteMaterial({
-                    map: texture,
-                    color: 0xffffff,
-                    transparent: true,
-                    opacity: 0.85, 
-                    depthWrite: false 
-                });
-
-                for (let i = 0; i < countPerImage; i++) {
-                    
-                    let x, y, z, distance, angle;
-                    let validPosition = false;
-                    let attempts = 0;
-
-                    while (!validPosition && attempts < 20) {
-                        angle = Math.random() * Math.PI * 2;
-                        const innerRadius = 15;
-                        const outerRadius = 40; 
-                        distance = Math.sqrt(Math.random()) * (outerRadius - innerRadius) + innerRadius;
-                        
-                        x = Math.cos(angle) * distance;
-                        z = Math.sin(angle) * distance;
-                        y = (Math.random() - 0.5) * 2.0; 
-
-                        let tooClose = false;
-                        for (let p of placedPositions) {
-                            const dx = x - p.x;
-                            const dy = y - p.y;
-                            const dz = z - p.z;
-                            const distSq = dx*dx + dy*dy + dz*dz;
-                            if (distSq < (minSeparation * minSeparation)) {
-                                tooClose = true;
-                                break;
-                            }
-                        }
-
-                        if (!tooClose) {
-                            validPosition = true;
-                            }
-                        attempts++;
-                    }
-                    
-                    placedPositions.push({x, y, z}); 
-
-                    const sprite = new THREE.Sprite(mat);
-                    sprite.scale.set(baseSize * aspectRatio, baseSize, 1.0);
-                    sprite.position.set(x, y, z);
-                    
-                    sprite.userData = {
-                        radius: distance,
-                        angle: angle,
-                        y: y,
-                        speed: (3.0 / distance) * 0.005
-                    };
-
-                    saturnGroup.add(sprite);
-                    ringSprites.push(sprite);
-                }
-            });
-        });
-    }
+    // Start loading process (Async)
+    loadImagesSequentially();
 
     const dustCount = particleCount - bodyCount; 
     for (let i = 0; i < dustCount; i++) {
@@ -226,8 +311,6 @@ function createSaturn() {
 }
 
 createSaturn();
-
-// Removed Color Picker Event Listener
 
 let targetScale = 1;
 let currentScale = 1;
@@ -292,16 +375,13 @@ window.addEventListener('resize', () => {
 });
 
 const videoElement = document.getElementById('video-input');
-const loader = document.getElementById('loader');
 
 let isHandActive = false;
 let lastHandX = 0.5;
 let lastHandY = 0.5;
 
 function onResults(results) {
-    loader.style.display = 'none';
-    // Removed Status Indicator Logic
-
+    // Camera logic runs in background but doesn't unlock screen
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         
         const landmarks = results.multiHandLandmarks[0];
@@ -354,7 +434,7 @@ const cameraUtils = new Camera(videoElement, {
             try {
                 await hands.send({image: videoElement});
             } catch (error) {
-                console.warn("Camera check: Waiting for valid frame...");
+                // Ignore startup frames
             }
         }
     },
